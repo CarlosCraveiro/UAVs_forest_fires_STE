@@ -1,0 +1,33 @@
+services:
+  notebook:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: uav-fire-ste:latest
+    container_name: fire-ste-uav
+    
+    # Exposição da porta para acesso local (localhost:8888)
+    ports:
+      - "8888:8888"
+    
+    environment:
+      - PYTHONPATH=/root/work/src
+
+    volumes:
+      - ./:/root/work              # Mapeia a raiz do repositório (arquivos de código) 
+      - python_venv:/venv          # Persiste as bibliotecas instaladas no ambiente virtual
+    
+    # Configuração de limites de hardware
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'              # Ajuste conforme a potência do seu PC
+          memory: 8G               # Limite máximo de RAM
+        reservations:
+          memory: 2G               # Reserva mínima de RAM
+
+    restart: unless-stopped
+    tty: true
+
+volumes:
+  python_venv:                     # Volume nomeado para o ambiente Python
