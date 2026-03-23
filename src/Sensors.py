@@ -6,6 +6,16 @@ class Sensor(ABC):
         self.name = name
         self.min_resolution = min_resolution
 
+    @property
+    @abstractmethod
+    def noise_std(self) -> float:
+        """
+        Retorna o desvio padrão do ruído do sensor.
+        Contrato obrigatório para que os estimadores (ex: Filtro de Partículas) 
+        possam acessar esse valor e calcular a verossimilhança.
+        """
+        pass
+
     @abstractmethod
     def read_measurement(self, real_concentration: float) -> float:
         """
@@ -16,9 +26,16 @@ class Sensor(ABC):
 class PIDGasSensor(Sensor):
     def __init__(self, name: str, min_resolution: float, noise_std: float = 0.001):
         super().__init__(name, min_resolution)
-        self.noise_std = noise_std
+        # Salva o valor em uma variável privada (com o underscore na frente)
+        self._noise_std = noise_std
+
+    @property
+    def noise_std(self) -> float:
+        # Implementa o getter exigido pela classe abstrata
+        return self._noise_std
 
     def read_measurement(self, real_concentration: float) -> float:
+        # Usa a property para pegar o ruído
         noise = np.random.normal(0, self.noise_std)
         meas = real_concentration + noise
 

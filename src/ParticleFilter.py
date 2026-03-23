@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Any
+from typing import Any, Callable
 from dataclasses import dataclass
 from Estimators import SourceEstimator, EstimatorConfig
 
@@ -7,12 +7,14 @@ from Estimators import SourceEstimator, EstimatorConfig
 class ParticleFilterConfig(EstimatorConfig):
     num_particles: int
     n_eff_threshold: float
-    resample_function: str
+    resample_function: Callable
     target_sensor_name: str
+    dispersion_model: Callable
+    likelihood_function: Callable
 
 class ParticleFilter(SourceEstimator):
     def __init__(self):
-        # Substituímos 'phi' pelos três ângulos de Euler
+        # Array estruturado das partículas
         self.particle_dtype = np.dtype([
             ('weight', np.float64),
             ('x_s', np.float64),
@@ -40,25 +42,91 @@ class ParticleFilter(SourceEstimator):
         particles['y_s'] = np.random.uniform(prior_params["y_s"]["low"], prior_params["y_s"]["high"], N)
         particles['q'] = np.random.gamma(prior_params["q"]["shape"], prior_params["q"]["scale"], N)
         particles['u_s'] = np.random.normal(prior_params["u_s"]["mean"], prior_params["u_s"]["std"], N)
-        
-        # Amostrando os ângulos de Euler
         particles['pitch'] = np.random.uniform(prior_params["pitch"]["low"], prior_params["pitch"]["high"], N)
         particles['yaw'] = np.random.uniform(prior_params["yaw"]["low"], prior_params["yaw"]["high"], N)
-        
         particles['zeta1'] = np.random.uniform(prior_params["zeta1"]["low"], prior_params["zeta1"]["high"], N)
         particles['zeta2'] = np.random.uniform(prior_params["zeta2"]["low"], prior_params["zeta2"]["high"], N)
         
         return particles
 
-    def step(self, uav_data: dict, memory: Any, config: EstimatorConfig) -> np.ndarray:
+    def step(self, history: Any, memory: Any, config: EstimatorConfig) -> np.ndarray:
         """
         Executa um passo de estimação.
         """
         particles = memory
+
+        # Array para acumular as verossimilhanças de todos os drones no instante atual
+        combined_likelihoods = np.ones(len(particles), dtype=np.float64)
         
-        # TODO: Predição (movimento aleatório das partículas)
-        # TODO: Atualização (cálculo do likelihood usando o modelo de dispersão)
-        # TODO: Normalização dos pesos
-        # TODO: Reamostragem (se N_eff < threshold)
+        # Pega a lista de todos os VANTs registrados no objeto de histórico
+        uav_ids = history.get_all_uav_ids()
+        
+        for uav_id in uav_ids:
+            # Recupera as listas completas deste drone
+            trajectory = history.get_trajectory(uav_id)
+            sensor_data = history.get_sensor_history(uav_id, config.target_sensor_name)
+            
+            # Se não houver dados, pula para o próximo drone
+            if not trajectory or not sensor_data:
+                continue
+                
+            # Extrai os dados do instante atual (o mais recente é sempre o último elemento)
+            x_k, y_k, z_k = trajectory[-1]
+            measurement = sensor_data[-1]
+            z_s = 0.0 
+
+            # Recupera o desvio padrão do sensor específico deste UAV
+            noise_std = history.get_sensor_noise_std(uav_id, config.target_sensor_name)
+            
+            # TODO: Predição (movimento aleatório das partículas / random walk)???
+            # Investigar melhor a necessidade disso....talvez modularizar....
+            
+            # --- Atualização (Modelo de Dispersão) ----
+            c_preds = config.dispersion_model(
+                sensor_pos=(x_k, y_k, z_k),
+                source_pos=(particles['x_s'], particles['y_s'], z_s),
+                qs=particles['q'],
+                us=particles['u_s'],
+                zetas=(particles['zeta1'], particles['zeta2']),
+                wind_euler=(particles['pitch'], particles['yaw'])
+            )
+            
+            # --- Verossimilhança ---
+            likelihoods = config.likelihood_function(c_preds, measurement, noise_std=noise_std)
+            
+            # Multiplica a verossimilhança (fusão de dados dos múltiplos sensores independentes)
+            combined_likelihoods *= likelihoods
+        
+        # Aplica a verossimilhança final agregada aos pesos das partículas
+        particles['weight'] *= combined_likelihoods
+        
+        # --- Normalização dos pesos ---
+        weight_sum = np.sum(particles['weight'])
+        if weight_sum < 1e-300: # Previne divisão por zero se todas as partículas morrerem
+            particles['weight'] = 1.0 / len(particles) 
+        else:
+            particles['weight'] /= weight_sum
+            
+        # --- Reamostragem ---
+        n_eff = (1.0 / np.sum(particles['weight'] ** 2)) / config.num_particles
+        print(n_eff)
+        if n_eff < config.n_eff_threshold:
+            print("Reamostrou!")
+            # 1. Extrai todo o histórico de medições do target_sensor de todos os VANTs
+            all_measurements = []
+            uav_ids = history.get_all_uav_ids()
+            for uav_id in uav_ids:
+                sensor_history = history.get_sensor_history(uav_id, config.target_sensor_name)
+                if sensor_history:
+                    all_measurements.extend(sensor_history)
+            
+            # 2. Converte para um array NumPy
+            measurements_array = np.array(all_measurements)
+            
+            # 3. Chama a função de reamostragem com a nova assinatura
+            particles = config.resample_function(particles, measurements_array)
+            
+            # 4. Restaura os pesos para uma distribuição uniforme
+            particles['weight'] = 1.0 / len(particles)
         
         return particles
